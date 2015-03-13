@@ -8,13 +8,13 @@
 
 #import "Network_RemoteDataLoad.h"
 #import <objc/runtime.h>
-#import <pthread.h>
+#import <pthread/pthread.h>
 
 #if __LP64__ || (TARGET_OS_EMBEDDED && !TARGET_OS_IPHONE) || TARGET_OS_WIN32 || NS_BUILD_32_LIKE_64
-#define ITEMINFOSIZE 73/*size int = 4, size long = 8, size iteminfo = 56*/
+#define ITEMINFOSIZE 74/*size int = 4, size long = 8, size iteminfo = 56*/
 #define INTEGERSIZE 8
 #else
-#define ITEMINFOSIZE 37/*size int = 4, size long = 4, size iteminfo = 28*/
+#define ITEMINFOSIZE 38/*size int = 4, size long = 4, size iteminfo = 28*/
 #define INTEGERSIZE 4
 #endif
 
@@ -35,10 +35,11 @@ typedef struct iteminfo {
     NSString *urlstr;
     NSString *l1cache;
     NSString *l2cache;
-    NSFileHandle *filehandle;
-    NSDate *datemodified;
+    NSFileHandle *filehandle;///
+    NSDate *datemodified;///
     void (^didFinishLoad)(NSData *data);
-    char cancelable;//0/1
+    char cancelable;
+    char canceled;
 } iteminfo_t;
 NSDateFormatter *__httpDateFormater = nil;
 NSFileManager *__fm = nil;
@@ -46,9 +47,10 @@ dispatch_queue_t __mainqueue;
 dispatch_queue_t __networkconcurrentqueue = nil;
 dispatch_semaphore_t __networkqueuesemaphore = nil;
 iteminfo_t __items[MAXDOWNLOAD];//不使用__items[0]，从index=1开始！
+pthread_t __networkbackgroundthread;//...
+pthread_mutex_t __mutex_status = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t __mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t __cond = PTHREAD_COND_INITIALIZER;
-pthread_t __networkbackgroundthread;//going to...
 
 @implementation Network_RemoteDataLoad
 
@@ -90,8 +92,6 @@ pthread_t __networkbackgroundthread;//going to...
         {
             __networkqueuesemaphore = dispatch_semaphore_create(1);
         }
-//        dispatch_retain(__networkconcurrentqueue);//?
-//        dispatch_retain(__networkqueuesemaphore);//?
     }
     return self;
 }
@@ -101,8 +101,6 @@ pthread_t __networkbackgroundthread;//going to...
     [_l1CacheDir release];
     [_l2CacheDir release];
     [_destDir release];
-//    dispatch_release(__networkconcurrentqueue);
-//    dispatch_release(__networkqueuesemaphore);
     [super dealloc];
 }
 
@@ -136,9 +134,12 @@ pthread_t __networkbackgroundthread;//going to...
         {
             dispatch_semaphore_signal(__networkqueuesemaphore);
             NSData *data = [NSData dataWithContentsOfFile:l1Cache];
-            dispatch_async(__mainqueue, ^{
-                didFinishLoad(data);
-            });
+            if (data)
+            {
+                dispatch_async(__mainqueue, ^{
+                    didFinishLoad(data);
+                });
+            }
             return;
         }
         for (NSInteger i = 1; i < MAXDOWNLOAD; i++)
@@ -234,8 +235,44 @@ pthread_t __networkbackgroundthread;//going to...
     }
     __items[index].index = 0;
     __items[index].cancelable = 0;
+    __items[index].canceled = 0;
     __items[0].index -= 1;
     dispatch_semaphore_signal(__networkqueuesemaphore);
+}
+
+- (void)emptyCanceledItemAtIndex:(NSInteger)index
+{
+    __items[index].urlstrhash = 0;
+    __items[index].connection = 0;
+    if (__items[index].urlstr) {
+        [__items[index].urlstr release];
+        __items[index].urlstr = nil;
+    }
+    if (__items[index].l1cache) {
+        [__items[index].l1cache release];
+        __items[index].l1cache = nil;
+    }
+    if (__items[index].l2cache) {
+        [__items[index].l2cache release];
+        __items[index].l2cache = nil;
+    }
+    if (__items[index].filehandle) {
+        [__items[index].filehandle closeFile];
+        [__items[index].filehandle release];
+        __items[index].filehandle = nil;
+    }
+    if (__items[index].datemodified) {
+        [__items[index].datemodified release];
+        __items[index].datemodified = nil;
+    }
+    if (__items[index].didFinishLoad) {
+        [__items[index].didFinishLoad release];
+        __items[index].didFinishLoad = nil;
+    }
+    __items[index].index = 0;
+    __items[index].cancelable = 0;
+    __items[index].canceled = 0;
+    __items[0].index -= 1;
 }
 
 - (BOOL)cancelConnectionOfURLWithString:(NSString *)URLStr
@@ -254,6 +291,7 @@ pthread_t __networkbackgroundthread;//going to...
             count--;
             if (__items[i].urlstrhash == newHash)
             {
+                __items[i].canceled = 1;
                 __items[i].urlstrhash = 0;
                 connection = (NSURLConnection *)__items[i].connection;
                 break;
@@ -263,20 +301,45 @@ pthread_t __networkbackgroundthread;//going to...
     dispatch_semaphore_signal(__networkqueuesemaphore);
     if (connection)
     {
-        pthread_mutex_lock(&__mutex);
+        NSFileHandle *fileHandle = nil;
+        NSDate *dateModified = nil;
+        NSString *l2Path = nil;
+        pthread_mutex_lock(&__mutex_status);
         if (__items[i].cancelable == 1)
         {
+            __items[i].connection = 0;
             [connection cancel];
+            l2Path = [__items[i].l2cache retain];
+            if (__items[i].filehandle)
+            {
+                fileHandle = [__items[i].filehandle retain];
+            }
             if (__items[i].datemodified)
             {
-                [__fm setAttributes:@{NSFileModificationDate:__items[i].datemodified} ofItemAtPath:__items[i].l2cache error:nil];
+                dateModified = [__items[i].datemodified retain];
             }
-            [self emptyItemAtIndex:i];
-            pthread_mutex_unlock(&__mutex);
-            return YES;
+            [self emptyCanceledItemAtIndex:i];
         }
-        pthread_mutex_unlock(&__mutex);
-        return NO;
+        pthread_mutex_unlock(&__mutex_status);
+        if (dateModified)
+        {
+            if (fileHandle)
+            {
+                [fileHandle closeFile];
+                [__fm setAttributes:@{NSFileModificationDate:dateModified} ofItemAtPath:l2Path error:nil];
+                [fileHandle release];
+            }
+            [dateModified release];
+        }
+        else
+        {
+            if (fileHandle)
+            {
+                [fileHandle release];
+            }
+        }
+        [l2Path release];
+        return YES;
     }
     return NO;
 }
@@ -337,18 +400,18 @@ pthread_t __networkbackgroundthread;//going to...
 {
     dispatch_async(__networkconcurrentqueue, ^{
         NSURL *url = [NSURL URLWithString:__items[index].urlstr];
-        NSURLRequest *ureq = [[NSURLRequest alloc] initWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData timeoutInterval:3];
+        NSURLRequest *ureq = [[NSURLRequest alloc] initWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData timeoutInterval:10];
         NSURLConnection *connection = [NSURLConnection connectionWithRequest:ureq delegate:self];
+        [ureq release];
         [connection setTag:0x0];
         [connection setIndex:index];
         __items[index].connection = (NSUInteger)connection;
         [connection start];
         [[NSRunLoop currentRunLoop] run];
-        [ureq release];
     });
 }
 
-- (void)continueToDownloadItemAtIndex:(NSInteger)index withRangeFrom:(unsigned long long)size
+- (void)continueToDownloadItemAtIndex:(NSInteger)index withRangeFrom:(unsigned long long)size urlHash:(NSUInteger)hash
 {
     dispatch_async(__networkconcurrentqueue, ^{
         NSURL *url = [NSURL URLWithString:__items[index].urlstr];
@@ -356,24 +419,28 @@ pthread_t __networkbackgroundthread;//going to...
         [mureq setHTTPMethod:@"GET"];
         [mureq addValue:[NSString stringWithFormat:@"bytes=%llu-", size] forHTTPHeaderField:@"Range"];
         NSURLConnection *connection = [NSURLConnection connectionWithRequest:mureq delegate:self];
+        [mureq release];
         [connection setTag:0x1];
         [connection setIndex:index];
-        __items[index].connection = (NSUInteger)connection;
-        [connection start];
-        [[NSRunLoop currentRunLoop] run];
-        [mureq release];
+        dispatch_semaphore_wait(__networkqueuesemaphore, DISPATCH_TIME_FOREVER);
+        if (__items[index].canceled == 0 && __items[index].urlstrhash == hash)
+        {
+            __items[index].connection = (NSUInteger)connection;
+            [connection start];
+            [[NSRunLoop currentRunLoop] run];
+        }
+        dispatch_semaphore_signal(__networkqueuesemaphore);
     });
 }
 
 - (void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error
 {
-    NSLog(@"Failed to connection to: %@", __items[[connection index]].urlstr);
-    [self emptyItemAtIndex:[connection index]];
-//    __block UIAlertView *ual = [[UIAlertView alloc] initWithTitle:nil message:@"failed to connect!" delegate:nil cancelButtonTitle:@"CLOSE" otherButtonTitles:nil, nil];
-//    dispatch_sync(__mainqueue, ^{
-//        [ual show];
-//    });
-//    [ual release];
+    __items[[connection index]].cancelable = 0;///!!!!!!!!!!!!!!!!
+    if (__items[[connection index]].connection == (NSUInteger)connection)
+    {
+        NSLog(@"无法连接到 %@", [[[connection currentRequest] URL] absoluteString]);
+        [self emptyItemAtIndex:[connection index]];
+    }
 }
 
 - (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response
@@ -393,65 +460,103 @@ pthread_t __networkbackgroundthread;//going to...
         remoteFileDateModified = [__httpDateFormater dateFromString:lastModified];
     NSInteger connectionTag = [connection tag];
     NSInteger connectionIndex = [connection index];
+    NSUInteger urlHash = __items[connectionIndex].urlstrhash;
     if (connectionTag == 0x0)
     {
-        if ([__fm fileExistsAtPath:__items[connectionIndex].l2cache])
+        if (lastModified)
         {
-            NSDictionary *localFileInfo = [__fm attributesOfItemAtPath:__items[connectionIndex].l2cache error:nil];
-            if ([[localFileInfo fileModificationDate] compare:remoteFileDateModified] == NSOrderedSame)
+            if ([__fm fileExistsAtPath:__items[connectionIndex].l2cache])
             {
-                if ([contentLength longLongValue] == [localFileInfo fileSize])/**load l2 cache*/
+                NSDictionary *localFileInfo = [__fm attributesOfItemAtPath:__items[connectionIndex].l2cache error:nil];
+                if ([[localFileInfo fileModificationDate] compare:remoteFileDateModified] == NSOrderedSame)
                 {
-                    [connection cancel];
-                    /*设置为0、并在执行之前判断！避免__items[]在connection被cancel后重新使用导致异常。*/
-                    __items[connectionIndex].cancelable = 0;
-                    if (__items[connectionIndex].connection == (NSUInteger)connection)
+                    if ([contentLength longLongValue] == [localFileInfo fileSize])/**load l2 cache*/
                     {
-                        __block NSData *data = [NSData dataWithContentsOfFile:__items[connectionIndex].l2cache];
+                        [connection cancel];
                         /*
-                         等待block执行完毕并empty __items[]。
-                         data此处可以__block
                          */
-                        dispatch_sync(__mainqueue, ^{
-                            __items[connectionIndex].didFinishLoad(data);
-                        });
-                        [data writeToFile:__items[connectionIndex].l1cache atomically:YES];
-                        [self emptyItemAtIndex:connectionIndex];
+                        __items[connectionIndex].cancelable = 0;
+                        if (__items[connectionIndex].connection == (NSUInteger)connection)
+                        {
+                            __block NSData *data = [NSData dataWithContentsOfFile:__items[connectionIndex].l2cache];
+                            /*
+                             */
+                            if (data)
+                            {
+                                dispatch_sync(__mainqueue, ^{
+                                    __items[connectionIndex].didFinishLoad(data);
+                                });
+                                [data writeToFile:__items[connectionIndex].l1cache atomically:YES];
+                            }
+                            [self emptyItemAtIndex:connectionIndex];
+                        }
+                        return;
                     }
-                    return;
-                }
-                else if ([contentLength longLongValue] > [localFileInfo fileSize])
-                {
-                    [connection cancel];
-                    [self continueToDownloadItemAtIndex:__items[0].index withRangeFrom:[localFileInfo fileSize]];
-                    return;
+                    else if ([contentLength longLongValue] > [localFileInfo fileSize])
+                    {
+                        __items[connectionIndex].connection = 0;
+                        [connection cancel];
+                        [self continueToDownloadItemAtIndex:connectionIndex withRangeFrom:[localFileInfo fileSize] urlHash:urlHash];
+                        return;
+                    }
+                    else
+                    {
+                        [__fm removeItemAtPath:__items[connectionIndex].l2cache error:nil];
+                    }
                 }
                 else
+                {
                     [__fm removeItemAtPath:__items[connectionIndex].l2cache error:nil];
+                }
+                /**
+                 NSDirectoryEnumerator *dirEnum = [__fm enumeratorAtPath:@""];
+                 [dirEnum fileAttributes];
+                 */
+            }
+            [__fm createFileAtPath:__items[connectionIndex].l2cache contents:nil attributes:nil];
+        }
+        else
+        {
+            if ([__fm fileExistsAtPath:__items[connectionIndex].l2cache])
+            {
+                [__fm removeItemAtPath:__items[connectionIndex].l2cache error:nil];
+                [__fm createFileAtPath:__items[connectionIndex].l2cache contents:nil attributes:nil];
             }
             else
             {
-                [__fm removeItemAtPath:__items[connectionIndex].l2cache error:nil];
+                [__fm createFileAtPath:__items[connectionIndex].l2cache contents:nil attributes:nil];
             }
-            /**
-             NSDirectoryEnumerator *dirEnum = [__fm enumeratorAtPath:@""];
-             [dirEnum fileAttributes];
-             */
         }
-        [__fm createFileAtPath:__items[connectionIndex].l2cache contents:nil attributes:nil];
     }
     else if (connectionTag == 0x1) {}
-    __items[connectionIndex].filehandle = [[NSFileHandle fileHandleForWritingAtPath:__items[connectionIndex].l2cache] retain];
-    if (remoteFileDateModified)
+    NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:__items[connectionIndex].l2cache];
+    dispatch_semaphore_wait(__networkqueuesemaphore, DISPATCH_TIME_FOREVER);
+    if (__items[connectionIndex].canceled == 0 && __items[connectionIndex].connection == (NSUInteger)connection)
     {
-        __items[connectionIndex].datemodified = [remoteFileDateModified retain];
+        if (__items[connectionIndex].filehandle)
+        {
+            [__items[connectionIndex].filehandle release];
+        }
+        __items[connectionIndex].filehandle = [fileHandle retain];
+        if (remoteFileDateModified)
+        {
+            if (__items[connectionIndex].datemodified)
+            {
+                [__items[connectionIndex].datemodified release];
+            }
+            __items[connectionIndex].datemodified = [remoteFileDateModified retain];
+        }
     }
+    dispatch_semaphore_signal(__networkqueuesemaphore);
 }
 
 - (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data
 {
-    [__items[[connection index]].filehandle seekToEndOfFile];
-    [__items[[connection index]].filehandle writeData:data];
+    if (__items[[connection index]].filehandle)
+    {
+        [__items[[connection index]].filehandle seekToEndOfFile];
+        [__items[[connection index]].filehandle writeData:data];
+    }
 }
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection
@@ -465,10 +570,21 @@ pthread_t __networkbackgroundthread;//going to...
     if (__items[connectionIndex].connection == (NSUInteger)connection)
     {
         __block NSData *data = [NSData dataWithContentsOfFile:__items[connectionIndex].l2cache];
-        dispatch_sync(__mainqueue, ^{
-            __items[connectionIndex].didFinishLoad(data);
-        });
-        [data writeToFile:__items[connectionIndex].l1cache atomically:YES];
+        if (data)
+        {
+            dispatch_sync(__mainqueue, ^{
+                __items[connectionIndex].didFinishLoad(data);
+            });
+            if ([__fm fileExistsAtPath:__items[connectionIndex].l1cache])
+            {
+                [__fm removeItemAtPath:__items[connectionIndex].l1cache error:nil];
+                [data writeToFile:__items[connectionIndex].l1cache atomically:YES];
+            }
+            else
+            {
+                [data writeToFile:__items[connectionIndex].l1cache atomically:YES];
+            }
+        }
         [self emptyItemAtIndex:connectionIndex];
     }
 }

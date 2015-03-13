@@ -16,6 +16,6 @@
 @end
 
 @protocol TableFooterViewDelegate <NSObject>
-- (void)buttonDidTouchUpInside:(UIButton *)button;
+- (void)footerButtonDidTouchedUpInside:(UIButton *)button;
 
 @end

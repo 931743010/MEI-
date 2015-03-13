@@ -33,6 +33,8 @@
 #define S_PAGEINDEX9 @"b305290ec04b404bb5d98e1118855f56"
 #define S_PAGEINDEX10 @"4d2e921c6546df60b23b20b89a967ef9"
 #define S_PAGEINDEX11 @"29ea0ab4bd37e3c39a0463d3ad8190dc"
+#define S_PAGEINDEX12 @"0e0c8ec87f533ab05c36030cb1e4f49b"
+#define S_PAGEINDEX13 @"d4ed8c75350232118a39f0463fd670a5"
 
 #define S_CATE12718_PGID1 @"f27b33b08a9854fa90661f60956c6587"
 #define S_CATE12718_PGID2 @"8dc896f171af9d757ec4607b913c97ea"
@@ -43,7 +45,7 @@
 
 #define S_CATE12719_PGID1 @"2a43e7f41e0b49c8b47ab797f4339f5c"
 #define S_CATE12719_PGID2 @"62ec5cb76335926388388a1b181f069a"
-#define S_CATE12719_PGID3
+#define S_CATE12719_PGID3 @"563d06bed68ace5779dfd77303fd6e07"
 #define S_CATE12719_PGID4
 #define S_CATE12719_PGID5
 #define S_CATE12719_PGID6
@@ -107,7 +109,7 @@ Xttp://www.mei.com
 ///silo
 //按silo类显示
 #define SPECIALSILO @"http://www.mei.com/appapi/silo/specialSilo?summary=ab37c575dd399d014187f1c8c0d921a9"
-/**--Android--*/
+/**--Andr...--*/
 //@"http:\//www.mei.com/appapi/home/announce?summary=ab37c575dd399d014187f1c8c0d921a9"
 //@"http:\//www.mei.com/appapi/silo/navigation?summary=ab37c575dd399d014187f1c8c0d921a9"
 /**--       --*/

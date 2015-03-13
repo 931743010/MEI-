@@ -8,7 +8,7 @@
 
 #import "Home.h"
 #import "CategoryItemsList.h"
-#define HEADERBARHEIGHT 90
+#import "HeaderFooterManager.h"
 
 @interface Home ()
 {
@@ -17,10 +17,11 @@
     CGFloat _viewWidth;
     CGFloat _viewHeight;
     NSMutableArray *_observerArr;
-    NSInteger _scrollViewOldIndex;
     BOOL _scrollViewCanResponseToScroll;
+    
+    CGFloat _headerHeight;
 }
-@property (nonatomic, retain) NSNumber *selectedButtonTag;
+@property (nonatomic, assign) NSInteger selectedButtonTag;
 @end
 
 @implementation Home
@@ -31,13 +32,16 @@
     // Do any additional setup after loading the view.
     _viewWidth = [[self view] bounds].size.width;
     _viewHeight = [[self view] bounds].size.height;
+    _headerHeight = (0.220689 - 0.02) * _viewHeight;
     _categoryArr = [[NSMutableArray alloc] initWithCapacity:6];
     _observerArr = [[NSMutableArray alloc] initWithCapacity:7];
+    [self setAutomaticallyAdjustsScrollViewInsets:NO];
+    [HeaderFooterManager setWindowHeaderViewForViewController:self withHeaderStyle:headerWithNavigationAndShoppingBasket withTitle:nil];
     [[self view] addSubview:[self navigationViewInHeaderBar]];
-    [self setSelectedButtonTag:[NSNumber numberWithInteger:0x9000]];
-    _scrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0, HEADERBARHEIGHT, _viewWidth, _viewHeight - HEADERBARHEIGHT)];
+    [self setSelectedButtonTag:0x9000];
+    _scrollView = [[UIScrollView alloc] initWithFrame:CGRectMake(0, _headerHeight, _viewWidth, _viewHeight - _headerHeight)];
     [[self view] addSubview:_scrollView];
-    [_scrollView setContentSize:CGSizeMake(6 * _viewWidth, _viewHeight - HEADERBARHEIGHT)];
+    [_scrollView setContentSize:CGSizeMake(6 * _viewWidth, _viewHeight - _headerHeight)];
     [_scrollView setPagingEnabled:YES];
     [_scrollView setBounces:NO];
     [_scrollView setDelegate:self];
@@ -51,7 +55,7 @@
     ((CategoryItemsList *)_categoryArr[0])->_categoryId = -1;
     for (int i = 0; i < 6; i++)
     {
-        [[(CategoryItemsList *)_categoryArr[i] tableView] setFrame:CGRectMake(i * _viewWidth, 0, _viewWidth, _viewHeight - HEADERBARHEIGHT)];
+        [[(CategoryItemsList *)_categoryArr[i] tableView] setFrame:CGRectMake(i * _viewWidth, 0, _viewWidth, _viewHeight - _headerHeight)];
         [self addChildViewController:(CategoryItemsList *)_categoryArr[i]];
         [_scrollView addSubview:[(CategoryItemsList *)_categoryArr[i] tableView]];
     }
@@ -60,7 +64,9 @@
 - (void)dealloc
 {
     for (int i = 0; i < 7; i++)
+    {
         [self removeObserver:_observerArr[i] forKeyPath:@"selectedButtonTag"];
+    }
     [_observerArr release];
     [_scrollView release];
     [_categoryArr release];
@@ -73,21 +79,37 @@
     // Dispose of any resources that can be recreated.
 }
 
+#define BUTTONHEIGHT 3.9
+
+- (void)showLeftNavigationView:(UIButton *)button
+{
+    __block UIViewController *basic = [[self navigationController] parentViewController];
+    if ([[basic view] frame].origin.x == 0)
+    {
+        [UIView animateWithDuration:0.5 animations:^{
+            [[basic view] setFrame:CGRectMake(2 * _viewWidth / 3, 0, _viewWidth, _viewHeight)];
+        }];
+    }
+    else
+    {
+        [UIView animateWithDuration:0.5 animations:^{
+            [[basic view] setFrame:CGRectMake(0, 0, _viewWidth, _viewHeight)];
+        }];
+    }
+}
+
 - (UIView *)navigationViewInHeaderBar
 {
-    UIView *headerView = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, _viewWidth, HEADERBARHEIGHT)] autorelease];
-    UIView *buttonBkgrd = [[UIView alloc] initWithFrame:CGRectMake(0, HEADERBARHEIGHT * 5 / 9, _viewWidth, HEADERBARHEIGHT * 4 / 9)];
-    [headerView addSubview:buttonBkgrd];
-    [buttonBkgrd release];
+    UIView *buttonBkgrd = [[UIView alloc] initWithFrame:CGRectMake(0, _headerHeight * (10 - BUTTONHEIGHT) / 10, _viewWidth, _headerHeight * BUTTONHEIGHT / 10)];
     [buttonBkgrd setBackgroundColor:[UIColor blackColor]];
     for (int i = 0; i < 6; i++)
     {
-        UIButton *button = [[UIButton alloc] initWithFrame:CGRectMake(i * _viewWidth / 6, 0, _viewWidth / 6, 40)];
+        UIButton *button = [[UIButton alloc] initWithFrame:CGRectMake(i * _viewWidth / 6, 0, _viewWidth / 6, [buttonBkgrd bounds].size.height)];
         [button setTag:0x9000 + i];
         [buttonBkgrd addSubview:button];
         [button setTitleColor:[UIColor grayColor] forState:UIControlStateNormal];
         [[button titleLabel] setFont:[UIFont boldSystemFontOfSize:14]];
-        [button addTarget:self action:@selector(headerButtonAction:) forControlEvents:UIControlEventTouchUpInside];
+        [button addTarget:self action:@selector(navigationButtonAction:) forControlEvents:UIControlEventTouchUpInside];
         [self addObserver:button forKeyPath:@"selectedButtonTag" options:NSKeyValueObservingOptionNew context:nil];
         [_observerArr addObject:button];
         [button release];
@@ -115,19 +137,19 @@
                 break;
         }
     }
-    UIView *bottom = [[UIView alloc] initWithFrame:CGRectMake(_viewWidth / 12 - 16.67, HEADERBARHEIGHT * 3 / 9, 33.33, 2)];/*_viewWidth / 6 - 20*/
+    UIView *bottom = [[UIView alloc] initWithFrame:CGRectMake(_viewWidth / 12 - 16.67, 0.8 * [buttonBkgrd bounds].size.height, 33.33, 2)];/*_viewWidth / 6 - 20*/
     [bottom setBackgroundColor:[UIColor whiteColor]];
     [buttonBkgrd addSubview:bottom];
     [self addObserver:bottom forKeyPath:@"selectedButtonTag" options:NSKeyValueObservingOptionNew context:&_viewWidth];
     [_observerArr addObject:bottom];
     [bottom release];
-    return headerView;
+    return buttonBkgrd;
 }
 
-- (void)headerButtonAction:(UIButton *)button
+- (void)navigationButtonAction:(UIButton *)button
 {
     _scrollViewCanResponseToScroll = NO;
-    [self setSelectedButtonTag:[NSNumber numberWithInteger:[button tag]]];
+    [self setSelectedButtonTag:[button tag]];
     [_scrollView setContentOffset:CGPointMake(([button tag] - 0x9000) * _viewWidth, 0) animated:YES];
 }
 
@@ -149,11 +171,10 @@
     {
         CGFloat offset = [scrollView contentOffset].x;
         NSInteger index = 0.5 + offset / _viewWidth;
-        if (_scrollViewOldIndex != index)
+        if ([self selectedButtonTag] != index + 0x9000)
         {
-            [self setSelectedButtonTag:[NSNumber numberWithInteger:index + 0x9000]];
+            [self setSelectedButtonTag:index + 0x9000];
         }
-        _scrollViewOldIndex = index;
     }
 }
 
@@ -168,14 +189,29 @@
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
 {
-    NSInteger tag = [[change objectForKey:@"new"] integerValue];
-    if (tag == [self tag])
+    if ([keyPath isEqualToString:@"selectedButtonTag"])
     {
-        [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        NSInteger tag = [[change objectForKey:@"new"] integerValue];
+        if (tag == [self tag])
+        {
+            [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        }
+        else
+        {
+            [self setTitleColor:[UIColor grayColor] forState:UIControlStateNormal];
+        }
     }
-    else
+    else if ([keyPath isEqualToString:@"selectedButtonTag_Upcoming"])
     {
-        [self setTitleColor:[UIColor grayColor] forState:UIControlStateNormal];
+        NSInteger buttonTag = [[change objectForKey:@"new"] integerValue];
+        if ([self tag] == buttonTag)
+        {
+            [self setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        }
+        else
+        {
+            [self setTitleColor:[UIColor grayColor] forState:UIControlStateNormal];
+        }
     }
 }
 
@@ -185,10 +221,21 @@
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context
 {
-    CGFloat num = [[change objectForKey:@"new"] integerValue] - 0x9000 + 0.5;
-    [UIView animateWithDuration:0.3 animations:^{
-        [self setCenter:CGPointMake(num * *(CGFloat *)context / 6, [self center].y)];
-    }];
+    if ([keyPath isEqualToString:@"selectedButtonTag"])
+    {
+        CGFloat num = [[change objectForKey:@"new"] integerValue] - 0x9000 + 0.5;
+        [UIView animateWithDuration:0.3 animations:^{
+            [self setCenter:CGPointMake(num * *(CGFloat *)context / 6, [self center].y)];
+        }];
+    }
+    else if ([keyPath isEqualToString:@"selectedButtonTag_Upcoming"])
+    {
+        NSInteger numberOfDays = [self tag];
+        CGFloat num = [[change objectForKey:@"new"] integerValue] - 0x9500 + 0.5;
+        [UIView animateWithDuration:0.3 animations:^{
+            [self setCenter:CGPointMake(num * *(CGFloat *)context / numberOfDays, [self center].y)];
+        }];
+    }
 }
 
 @end
